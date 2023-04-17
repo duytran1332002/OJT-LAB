@@ -1,0 +1,6 @@
+transformers==4.10.2
+sentencepiece==0.1.96
+datasets==2.0.0
+rouge==1.0.1
+wandb==0.14.2
+accelerate==0.18.0
