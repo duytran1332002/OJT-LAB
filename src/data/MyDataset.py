@@ -69,7 +69,7 @@ class Dataset(torch.utils.data.Dataset):
                 return 1
         return 0
 
-    def __f1_score(self, prediction_tokens, ground_truth_tokens):
+    def __f1_score(self, prediction_tokens, ground_truth_tokens, input):
         """_summary_
         Args:
             prediction (_type_): _description_
@@ -80,10 +80,15 @@ class Dataset(torch.utils.data.Dataset):
         
         # ROUGE-L score
         rouge = Rouge()
+        print("-------------------------------------------------------------------")
+        print("- Input: ", input)
+        print("- Prediction_tokens: ", prediction_tokens)
+        print("- Ground_truth_tokens: ", ground_truth_tokens)
+        print("-------------------------------------------------------------------")
         f1_rouge_l = rouge.get_scores(prediction_tokens, ground_truth_tokens)[0]['rouge-l']["f"]
         return f1_rouge_l
 
-    def evaluate(self, predictions, gold_answers):
+    def evaluate(self, predictions, gold_answers, inputs):
         """_summary_
         Args:
             predictions (_type_): _description_
@@ -92,9 +97,10 @@ class Dataset(torch.utils.data.Dataset):
             _type_: _description_
         """
         f1 = exact_match = 0
+        print(len(predictions), len(gold_answers), len(inputs))
 
-        for ground_truths, prediction in tqdm(zip(gold_answers, predictions)):
+        for ground_truths, prediction, input in tqdm(zip(gold_answers, predictions, inputs)):
             # get the f1 score for each prediction
-            f1 += self.__f1_score(prediction, ground_truths)
+            f1 += self.__f1_score(prediction, ground_truths, input)
             exact_match += self.__exact_match_score(prediction, ground_truths)
         return f1/len(predictions), exact_match/len(predictions)
