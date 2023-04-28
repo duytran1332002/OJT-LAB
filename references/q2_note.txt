@@ -1,0 +1,1 @@
+all_datasets_v3_mpnet-base: https://huggingface.co/flax-sentence-embeddings/all_datasets_v3_mpnet-base

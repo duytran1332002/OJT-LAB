@@ -1,0 +1,26 @@
+version: "3.9"
+
+services:
+  pg-vector:
+    image: ankane/pgvector
+    ports:
+      - "5432:5432"
+    environment:
+      - POSTGRES_USER=postgres
+      - POSTGRES_PASSWORD=adidaphat
+    volumes:
+      - data:/var/lib/postgresql/data
+
+  pg-admin:
+    image: dpage/pgadmin4:6
+    environment:
+      - PGADMIN_DEFAULT_EMAIL=crackonebrain@email.com
+      - PGADMIN_DEFAULT_PASSWORD=adidaphat
+      - PGADMIN_LISTEN_PORT=5050
+
+    ports:
+      - "5050:5050"
+  
+
+volumes:
+  data:
