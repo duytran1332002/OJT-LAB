@@ -7,12 +7,20 @@ import wandb
 import json
 import time
 
-from transformers import PreTrainedTokenizer, T5ForConditionalGeneration, T5Tokenizer, AdamW, set_seed
+from transformers import PreTrainedTokenizer, T5ForConditionalGeneration, T5Tokenizer, GPT2Tokenizer, GPT2Model, T5PreTrainedModel, AutoTokenizer, AutoModelForSeq2SeqLM, AdamW, set_seed
 from torch.utils.data import DataLoader
 import argparse
 from accelerate import Accelerator
 from data.MyDataset import Dataset
 
+import nltk
+from nltk.corpus import stopwords
+from nltk.tokenize import word_tokenize
+from nltk.stem import PorterStemmer
+
+# Download stopwords and stemmer
+nltk.download('stopwords')
+nltk.download('punkt')
 
 def parse_command_line_arguments():
 
@@ -31,7 +39,7 @@ def parse_command_line_arguments():
     parser.add_argument('--tokenizer_path', type=str, default=None,
                         help="tokenizer path")
 
-    parser.add_argument('--t5_model', type=str, default="t5-base",
+    parser.add_argument('--model_type', type=str, default="t5-base",
                         help="What type of T5 model do you want use?")
     
     parser.add_argument('--test_only', type=bool, default=False,
@@ -65,32 +73,64 @@ def parse_command_line_arguments():
 
     return parsed_arguments
 
+# Define pre-processing functions
+def preprocess_text_evaluate(text):
+    # Convert text to lowercase
+    text = text.lower()
+    # Tokenize text into words
+    words = word_tokenize(text)
+    # Remove stopwords
+    words = [word for word in words if word not in stopwords.words('english')]
+    # Stem words
+    stemmer = PorterStemmer()
+    words = [stemmer.stem(word) for word in words]
+    # Join words back into a string
+    text = ' '.join(words)
+    return text
 
-def evaluate(model: T5ForConditionalGeneration,  
-            tokenizer: PreTrainedTokenizer,   validation_set: Dataset,  device: str, 
+def preprocess_text_train(text):
+    # reaplce \n with space
+    text = text.replace("\n", " ")
+    # remove unicode characters
+    text = text.encode('ascii', 'ignore').decode()
+    # replace \t with space
+    text = text.replace("\t", " ")
+    #remove extra spaces
+    text = " ".join(text.split())
+
+    return text
+
+def evaluate(model: AutoModelForSeq2SeqLM,  
+            tokenizer: AutoTokenizer,   validation_set: Dataset,  device: str, 
             max_input_length: int = 512):
     """_summary_
     Args:
-        model (T5ForConditionalGeneration): _description_
-        tokenizer (PreTrainedTokenizer): _description_
+        model (AutoModelForSeq2SeqLM): _description_
+        tokenizer (AutoTokenizer): _description_
         validation_set (Dataset): _description_
         device (str): _description_
         batch_size (int): _description_
     """
-    my_validation_dataloader = DataLoader(validation_set, batch_size=args.batch_size,
+    my_validation_dataloader = DataLoader(validation_set, batch_size=1,
                                           num_workers=args.workers, collate_fn=lambda data: validation_set.pack_minibatch(data))
 
     model.eval()
     model.to(device)
 
-
     with torch.no_grad():
         model_predictions_encoded = []
         target_encoded = []
+        inputs_after = []
         for contexts, questions, answers in tqdm(my_validation_dataloader):
-            inputs = list(map(lambda tuple: f"question:{tuple[0]}  context:{tuple[1]}", zip(
+            # create inputs
+            inputs = list(map(lambda tuple: f"question: {tuple[0]}  context: {tuple[1][0][0] + tuple[1][1][0]}", zip(
                 questions, contexts)))
-            answers = list(map(lambda answer: f"answer:{answer[0]}", answers))
+            answers = list(map(lambda answer: f"{answer[0]}", answers))
+            
+            # preprocess inputs
+            inputs = list(map(preprocess_text_train, inputs))
+            
+
             encoded_inputs = tokenizer(
                 inputs,
                 padding="longest",
@@ -118,27 +158,38 @@ def evaluate(model: T5ForConditionalGeneration,
                 input_ids=encoded_inputs, 
                 attention_mask=attention_mask,
                 do_sample=True,
-                max_length=64,
-                top_k=70,
-                top_p=0.96,
-                early_stopping=True)
+                min_length=64,
+                max_length=256,
+                top_k=0,
+                top_p=0.90,
+                temperature=0.8,
+                no_repeat_ngram_size=10,
+                repetition_penalty=1.2,
+                early_stopping=True,
+                remove_invalid_values=True)
+            
+            prediction = tokenizer.decode(model_predictions[0], skip_special_tokens=True)
+            #prediction = preprocess_text_evaluate(prediction)
+            model_predictions_encoded.append(prediction)
+            target = tokenizer.decode(encoded_targets[0], skip_special_tokens=True)
+            #target = preprocess_text_evaluate(target)
+            target_encoded.append(target)
+            inputs_after.append(inputs[0])
 
-            model_predictions_encoded.append(tokenizer.decode(model_predictions[0], skip_special_tokens=True))
-            target_encoded.append(tokenizer.decode(encoded_targets[0], skip_special_tokens=True))
-    f1, exact_match = validation_set.evaluate(model_predictions_encoded, target_encoded)
+    f1, exact_match = validation_set.evaluate(model_predictions_encoded, target_encoded, inputs_after)
     print(f"\t Validation Loss = {val_loss:.2f}, Validation F1 = {f1:.2f}, EM = {exact_match:.2f}")
     return val_loss, f1, exact_match
-    
 
-def train(model: T5ForConditionalGeneration, scheduler, 
-          tokenizer: PreTrainedTokenizer, optimizer: AdamW, 
+
+def train(model: AutoModelForSeq2SeqLM, scheduler, 
+          tokenizer: AutoTokenizer, optimizer: AdamW, 
           train_set: Dataset, validation_set: Dataset, 
           num_train_epochs: int, device: str, 
           batch_size: int, max_input_length: int = 512):
     """_summary_
     Args:
-        model (T5ForConditionalGeneration): _description_
-        tokenizer (PreTrainedTokenizer): _description_
+        model (AutoModelForSeq2SeqLM): _description_
+        tokenizer (AutoTokenizer): _description_
         optimizer (AdamW): _description_
         train_set (Dataset): _description_
         validation_set (Dataset): _description_
@@ -150,15 +201,8 @@ def train(model: T5ForConditionalGeneration, scheduler,
     # change format of time_start to be more readable
     time_start = time.strftime("%Y-%m-%d %H:%M:%S", time.localtime(time_start))
 
-    my_trainset_dataloader = DataLoader(train_set, batch_size=args.batch_size,
+    my_trainset_dataloader = DataLoader(train_set, shuffle=True, batch_size=args.batch_size,
                                         num_workers=args.workers, collate_fn=lambda data: train_set.pack_minibatch(data))
-    
-
-    # set training mode on the model
-    model.train()
-
-    # model to device
-    model.to(device)
 
 
     # start a new wandb run to track this script
@@ -169,7 +213,7 @@ def train(model: T5ForConditionalGeneration, scheduler,
         # track hyperparameters and run metadata
         config={
         "learning_rate": args.lr,
-        "architecture": args.t5_model,
+        "architecture": args.model_type,
         "dataset": args.train_data_path,
         "epochs": args.epochs,
         "batch_size": args.batch_size,
@@ -179,18 +223,29 @@ def train(model: T5ForConditionalGeneration, scheduler,
         }
     )
     # accelerate training
-    accelerator = Accelerator(gradient_accumulation_steps=2)
+    accelerator = Accelerator(gradient_accumulation_steps=8)
     model, optimizer, my_trainset_dataloader = accelerator.prepare(model, optimizer, my_trainset_dataloader)
+    # set training mode on the model
+    model.train()
+
+    # model to device
+    model.to(device)
 
     histories = []
     f1_old: int = 0
-    
+    val_loss_old: int = 0
     for epoch in range(num_train_epochs):
         epoch_train_loss = 0.
+
         for contexts,questions,answers in tqdm(my_trainset_dataloader):
             with accelerator.accumulate(model):
-                inputs = list(map(lambda tuple: f"question:{tuple[0]}  context:{tuple[1]}", zip(questions,contexts)))
+            #accelerator.free_memory()
+                inputs = list(map(lambda tuple: f"question: {tuple[0]}  context: {tuple[1][0][0] + tuple[1][1][0]}", zip(questions,contexts)))
                 answers = list(map(lambda answer: f"{answer[0]}", answers))
+
+                # preprocess inputs
+                inputs = list(map(preprocess_text_train, inputs))
+
 
                 encoded_inputs = tokenizer(
                                         inputs,
@@ -217,6 +272,9 @@ def train(model: T5ForConditionalGeneration, scheduler,
                 encoded_targets = encoded_targets.to(device)
                 attention_mask = attention_mask.to(device)
 
+                input_ids = accelerator.prepare(input_ids)
+                encoded_targets = accelerator.prepare(encoded_targets)
+                attention_mask = accelerator.prepare(attention_mask)
 
                 outputs = model(input_ids=input_ids, attention_mask=attention_mask, labels=encoded_targets)
                 loss = outputs.loss
@@ -225,7 +283,7 @@ def train(model: T5ForConditionalGeneration, scheduler,
                 optimizer.step()
                 optimizer.zero_grad()
                 epoch_train_loss += loss.item() * batch_size        
-        scheduler.step()
+        #scheduler.step()
         print(f"epoch={epoch + 1}/{num_train_epochs}")
         print(f"\t Train loss = {epoch_train_loss/len(train_set):.4f}")
 
@@ -233,13 +291,17 @@ def train(model: T5ForConditionalGeneration, scheduler,
         val_loss, f1, exact_match = evaluate(model, tokenizer, validation_set, 
                                    device, max_input_length)
         
-        if f1 > f1_old :
-            model.save_pretrained(f'results/{model.name_or_path}/{time_start}/model/best-f1')
-            tokenizer.save_pretrained(f'results/{model.name_or_path}/{time_start}/tokenizer/best-f1')
+        if f1 > f1_old:
+            model.save_pretrained(f'results/{args.model_type}/{time_start}/model/best-f1')
+            tokenizer.save_pretrained(f'results/{args.model_type}/{time_start}/tokenizer/best-f1')
             f1_old = f1
+        if val_loss < val_loss_old:
+            model.save_pretrained(f'results/{args.model_type}/{time_start}/model/best-val-loss')
+            tokenizer.save_pretrained(f'results/{args.model_type}/{time_start}/tokenizer/best-val-loss')
+            val_loss_old = val_loss
         if epoch+1 % 10 == 0:
-            model.save_pretrained(f'results/{model.name_or_path}/{time_start}/model/checkpoint-{epoch+1}')
-            tokenizer.save_pretrained(f'results/{model.name_or_path}/{time_start}/tokenizer/checkpoint-{epoch+1}')
+            model.save_pretrained(f'results/{args.model_type}/{time_start}/model/checkpoint-{epoch+1}')
+            tokenizer.save_pretrained(f'results/{args.model_type}/{time_start}/tokenizer/checkpoint-{epoch+1}')
 
         # log metrics to wandb
         wandb.log({"train_loss": epoch_train_loss/len(train_set), "val_loss": val_loss, "val_f1": f1, "val_em": exact_match, "learning_rate": scheduler.get_lr()[0]})
@@ -255,12 +317,12 @@ def train(model: T5ForConditionalGeneration, scheduler,
         model.train()
 
     model.save_pretrained(
-        f'results/{model.name_or_path}/{time_start}/model/checkpoint-{epoch+1}')
+        f'results/{args.model_type}/{time_start}/model/checkpoint-{epoch+1}')
     tokenizer.save_pretrained(
-        f'results/{model.name_or_path}/{time_start}/tokenizer/checkpoint-{epoch+1}')
+        f'results/{args.model_type}/{time_start}/tokenizer/checkpoint-{epoch+1}')
     
     # save the history of the training
-    with open(f'results/{model.name_or_path}/{time_start}/history.json', 'w') as f:
+    with open(f'results/{args.model_type}/{time_start}/history.json', 'w') as f:
         json.dump(histories, f)
     
 
@@ -280,11 +342,11 @@ if __name__ == '__main__':
             raise ValueError("Pretrain model path is not valid")
         if not os.path.exists(args.tokenizer_path):
             raise ValueError("Tokenizer path is not valid")
-        model = T5ForConditionalGeneration.from_pretrained(args.pretrain_model_path)
-        tokenizer = T5Tokenizer.from_pretrained(args.tokenizer_path)
+        model = AutoModelForSeq2SeqLM.from_pretrained(args.pretrain_model_path)
+        tokenizer = AutoTokenizer.from_pretrained(args.tokenizer_path)
     else:
-        model = T5ForConditionalGeneration.from_pretrained(args.t5_model)
-        tokenizer = T5Tokenizer.from_pretrained(args.t5_model)
+        model = AutoModelForSeq2SeqLM.from_pretrained(args.model_type)
+        tokenizer = AutoTokenizer.from_pretrained(args.model_type)
 
     
     #check validation data path is valid
