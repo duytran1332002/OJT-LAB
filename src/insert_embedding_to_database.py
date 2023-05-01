@@ -83,10 +83,10 @@ if __name__ == '__main__':
             data_dict[key] = preprocess_data(data_dict[key])
 
     # write data_dict to json file
-    with open("data_dict.json", "w") as f:
-        for key in data_dict.keys():
-            json.dump({key: data_dict[key]}, f)
-            f.write("\n")
+    # with open("data_dict.json", "w") as f:
+    #     for key in data_dict.keys():
+    #         json.dump({key: data_dict[key]}, f)
+    #         f.write("\n")
 
     del dataset
     #print 10 samples
@@ -105,7 +105,7 @@ if __name__ == '__main__':
     torch.cuda.empty_cache()
 
     # create model
-    model = RetrievalModel(args.model_name)
+    model = RetrievalModel(args.model_name, device="cuda")
 
     print("save embedding to database")
     # create database

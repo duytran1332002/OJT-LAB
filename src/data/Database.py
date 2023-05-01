@@ -62,14 +62,14 @@ class Database:
             print(e)
             self.connection.rollback()
     
-    def implement_function(self, function, *args):
-        """Implements a function
+    def implement_find_similar_passage(self, question_embedding, k = 5):
+        """Gets all values from the table
         Args:
-            function (str): function to be implemented
+            table_name (str): name of the table
         """
         try:
-            self.cursor.execute(f"""SELECT {function}({args})""")
-            self.connection.commit()
+            self.cursor.execute("""SELECT * FROM find_similar_passages(CAST(%s AS vector(768)), %s)""", (question_embedding.tolist(), k))
+            return self.cursor.fetchall()
         except Exception as e:
             print(e)
             self.connection.rollback()

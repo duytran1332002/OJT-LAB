@@ -6,3 +6,8 @@ rouge
 wandb
 accelerate
 psycopg2
+faiss-cpu
+onnx
+onnxruntime
+jax
+flax

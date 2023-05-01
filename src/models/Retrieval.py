@@ -18,13 +18,13 @@ class WikiDataset(Dataset):
         return len(self.wiki_dict)
 
 class RetrievalModel:
-    def __init__(self, model_name = 'sentence-transformers/all-mpnet-base-v1'):
+    def __init__(self, model_name = 'sentence-transformers/all-mpnet-base-v1', device = 'cpu'):
         self.model_name = model_name
         self.tokenizer = AutoTokenizer.from_pretrained(model_name)
         self.model = AutoModel.from_pretrained(model_name)
         self.model.eval()
-        self.model.to("cuda") if torch.cuda.is_available() else self.model.to("cpu")
-        print(f"Load model from {model_name} successfully")
+        self.model.to(device)
+        self.device = device
 
     #Mean Pooling - Take attention mask into account for correct averaging
     def _mean_pooling(self, model_output, attention_mask):
@@ -44,7 +44,7 @@ class RetrievalModel:
                                        truncation=truncation, 
                                        return_tensors=return_tensors)
         # Move to GPU
-        encoded_input.to("cuda") if torch.cuda.is_available() else encoded_input.to("cpu")
+        encoded_input.to(self.device)
 
         # Compute token embeddings
         with torch.no_grad():
